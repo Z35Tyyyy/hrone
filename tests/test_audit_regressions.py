@@ -7,7 +7,7 @@ from urllib.parse import quote
 import pytest
 
 from tests.conftest import ms
-from tests.test_attendance import close, punch
+from tests.test_attendance import close, correction, punch
 
 
 def test_punch_out_preserves_lateness_recorded_at_punch_in(api, database, add_employee):
@@ -107,3 +107,55 @@ def test_non_json_binary_body_returns_validation_error(api):
     response = api.post("/employees", content=b"\xff", headers={"content-type": "application/octet-stream"})
     assert response.status_code == 422, response.text
     assert isinstance(response.json()["detail"], list)
+
+
+@pytest.mark.parametrize(
+    "path, params",
+    [
+        ("/attendance", {"date_from": "2026-07-07", "date_to": "2026-07-06"}),
+        (
+            "/analytics/departments/Engineering/trend",
+            {"from": "2026-07-07", "to": "2026-07-06"},
+        ),
+        (
+            "/analytics/departments/Engineering/trend",
+            {"from": "2026-01-01", "to": "2026-07-06"},
+        ),
+        ("/admin/explain/department_summary", {}),
+        ("/admin/explain/employee_monthly", {"month": "2026-07"}),
+        ("/admin/explain/department_trend", {}),
+    ],
+)
+def test_query_business_errors_match_validation_schema(api, path, params):
+    response = api.get(path, params=params)
+    assert response.status_code == 422, response.text
+    details = response.json()["detail"]
+    assert isinstance(details, list) and details
+    assert all(isinstance(item, dict) for item in details)
+
+
+def test_write_business_errors_match_validation_schema(api, add_employee):
+    add_employee()
+    assert punch(api, "2026-07-06T09:30:00").status_code == 201
+    responses = [
+        close(api, "2026-07-06T09:30:00"),
+        close(api, "2026-07-07T09:30:01"),
+        correction(api, status="PRESENT"),
+        correction(api, status="ABSENT", punch_in=ms("2026-07-06T09:30:00")),
+    ]
+    for response in responses:
+        assert response.status_code == 422, response.text
+        details = response.json()["detail"]
+        assert isinstance(details, list) and details
+        assert all(isinstance(item, dict) for item in details)
+
+
+def test_resource_and_conflict_errors_keep_their_contract_shape(api, add_employee):
+    missing = api.get("/analytics/employees/EMP0001/monthly", params={"month": "2026-07"})
+    assert missing.status_code == 404
+    assert isinstance(missing.json()["detail"], str)
+    add_employee()
+    assert punch(api, "2026-07-06T09:30:00").status_code == 201
+    duplicate = punch(api, "2026-07-06T09:30:00")
+    assert duplicate.status_code == 409
+    assert isinstance(duplicate.json()["detail"], str)

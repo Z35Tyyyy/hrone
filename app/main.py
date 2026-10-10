@@ -15,6 +15,7 @@ from bson import Decimal128, json_util
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -84,6 +85,23 @@ class DepartmentPath(PathConvertor):
 
 register_url_convertor("department_name", DepartmentPath())
 app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0", lifespan=lifespan)
+
+
+@app.exception_handler(HTTPException)
+async def business_error_response(request, error: HTTPException):
+    if error.status_code != 422:
+        return await http_exception_handler(request, error)
+    # The contract uses the validation-error schema for business-rule failures too.
+    details = error.detail
+    if not isinstance(details, list):
+        details = [
+            {
+                "type": "value_error",
+                "loc": ["query" if request.method == "GET" else "body"],
+                "msg": str(details),
+            }
+        ]
+    return JSONResponse(status_code=422, content={"detail": details}, headers=error.headers)
 
 
 @app.exception_handler(RequestValidationError)
